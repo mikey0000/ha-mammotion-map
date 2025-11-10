@@ -31,8 +31,16 @@ export default (L, Plugin, Logger) => {
 
         const rotationDeg = this.options.rotation_deg || 0;
         if (rotationDeg !== 0) {
-          const originLat = this.options.rotation_origin_lat ?? 0;
-          const originLon = this.options.rotation_origin_lon ?? 0;
+          let originLat = this.options.rotation_origin_lat;
+          let originLon = this.options.rotation_origin_lon;
+
+          // Auto-calculate centroid if not given
+          if (originLat == null || originLon == null) {
+            const center = this._getGeoJsonCenter(geoJsonData);
+            originLat = center.lat;
+            originLon = center.lon;
+            Logger.debug(`[GeoJsonLoader] Calculated rotation origin: (${originLat}, ${originLon})`);
+          }
           geoJsonData = this._rotateGeoJson(geoJsonData, rotationDeg, originLat, originLon);
           Logger.debug(`[GeoJsonLoader] Applied rotation: ${rotationDeg}° around (${originLat}, ${originLon})`);
 }
@@ -243,6 +251,32 @@ export default (L, Plugin, Logger) => {
         return rotateCoords(geojson);
       }
     }
+
+    _getGeoJsonCenter(geojson) {
+      let totalLat = 0, totalLon = 0, count = 0;
+
+      const accumulate = (coords) => {
+        if (Array.isArray(coords[0])) {
+          coords.forEach(accumulate);
+        } else if (coords.length === 2 && typeof coords[0] === "number" && typeof coords[1] === "number") {
+          totalLon += coords[0];
+          totalLat += coords[1];
+          count++;
+        }
+      };
+
+      if (geojson.type === "FeatureCollection") {
+        geojson.features.forEach(f => accumulate(f.geometry.coordinates));
+      } else if (geojson.type === "Feature") {
+        accumulate(geojson.geometry.coordinates);
+      } else if (geojson.coordinates) {
+        accumulate(geojson.coordinates);
+      }
+
+      if (count === 0) return { lat: 0, lon: 0 };
+      return { lat: totalLat / count, lon: totalLon / count };
+    }
+
 
 
     _getFeatureStyle(feature) {
