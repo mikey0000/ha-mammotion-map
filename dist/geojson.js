@@ -29,6 +29,14 @@ export default (L, Plugin, Logger) => {
           Logger.debug(`[GeoJsonLoader] Applied offset: ${offsetLat}m north/south, ${offsetLon}m east/west`);
         }
 
+        const rotationDeg = this.options.rotation_deg || 0;
+        if (rotationDeg !== 0) {
+          const originLat = this.options.rotation_origin_lat ?? 0;
+          const originLon = this.options.rotation_origin_lon ?? 0;
+          geoJsonData = this._rotateGeoJson(geoJsonData, rotationDeg, originLat, originLon);
+          Logger.debug(`[GeoJsonLoader] Applied rotation: ${rotationDeg}° around (${originLat}, ${originLon})`);
+}
+
         // Main GeoJSON layer
         this.layer = L.geoJSON(geoJsonData, {
           style: (feature) => this._getFeatureStyle(feature),
@@ -162,6 +170,80 @@ export default (L, Plugin, Logger) => {
         return offsetCoords(geojson);
       }
     }
+
+    _rotateGeoJson(geojson, rotationDeg, originLat, originLon) {
+      const toRad = Math.PI / 180;
+      const toDeg = 180 / Math.PI;
+      const angle = rotationDeg * toRad;
+
+      // Helper: rotate a single [lon, lat] point
+      const rotatePoint = (coords) => {
+        const [lon, lat] = coords;
+
+        // Convert to meters (approx)
+        const R = 6378137; // Earth radius
+        const x = (lon - originLon) * (Math.PI / 180) * R * Math.cos(originLat * toRad);
+        const y = (lat - originLat) * (Math.PI / 180) * R;
+
+        // Rotate around origin (0,0)
+        const xr = x * Math.cos(angle) - y * Math.sin(angle);
+        const yr = x * Math.sin(angle) + y * Math.cos(angle);
+
+        // Convert back to lat/lon
+        const newLon = originLon + (xr / (R * Math.cos(originLat * toRad))) * toDeg;
+        const newLat = originLat + (yr / R) * toDeg;
+
+        return [newLon, newLat];
+      };
+
+      const rotateCoords = (geometry) => {
+        if (!geometry) return geometry;
+        switch (geometry.type) {
+          case "Point":
+            return { ...geometry, coordinates: rotatePoint(geometry.coordinates) };
+          case "LineString":
+            return { ...geometry, coordinates: geometry.coordinates.map(rotatePoint) };
+          case "Polygon":
+            return {
+              ...geometry,
+              coordinates: geometry.coordinates.map(ring =>
+                ring.map(rotatePoint)
+              )
+            };
+          case "MultiPolygon":
+            return {
+              ...geometry,
+              coordinates: geometry.coordinates.map(poly =>
+                poly.map(ring => ring.map(rotatePoint))
+              )
+            };
+          case "MultiLineString":
+            return {
+              ...geometry,
+              coordinates: geometry.coordinates.map(line =>
+                line.map(rotatePoint)
+              )
+            };
+          default:
+            return geometry;
+        }
+      };
+
+      if (geojson.type === "FeatureCollection") {
+        return {
+          ...geojson,
+          features: geojson.features.map(f => ({
+            ...f,
+            geometry: rotateCoords(f.geometry)
+          }))
+        };
+      } else if (geojson.type === "Feature") {
+        return { ...geojson, geometry: rotateCoords(geojson.geometry) };
+      } else {
+        return rotateCoords(geojson);
+      }
+    }
+
 
     _getFeatureStyle(feature) {
       if (feature.geometry?.type === 'Point' && feature.properties?.iconImage) {
